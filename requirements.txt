@@ -1,0 +1,7 @@
+yt-dlp==2023.11.14
+pytube
+youtube-dl
+openai
+pydub
+ffmpeg-python
+python-dotenv==1.0.0 

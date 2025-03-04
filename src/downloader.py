@@ -298,52 +298,79 @@ class YouTubeDownloader:
             self.logger.error(f"Error logging usage data: {str(e)}")
 
     def transcribe_video(self, file_path):
-        """Transcribe audio from a video file using configured transcriber"""
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"Archivo de audio no encontrado: {file_path}")
-            
-        self.logger.info(f"Iniciando transcripción del archivo: {file_path}")
-        
+        """Transcribir un video usando el método configurado"""
         try:
-            # Get audio duration for Whisper cost calculation using ffmpeg
-            import ffmpeg
-            self.logger.info("Obteniendo duración del audio con ffmpeg...")
-            probe = ffmpeg.probe(file_path)
-            duration = float(probe['streams'][0]['duration'])
-            self.logger.info(f"Duración del audio: {duration} segundos")
-            self.usage_data['whisper']['seconds'] += duration
+            self.logger.info(f"Iniciando transcripción del archivo: {file_path}")
+            print(f"[INFO] Iniciando transcripción del archivo: {file_path}")
             
-            # Check file size
-            file_size = os.path.getsize(file_path)
-            MAX_SIZE = 25 * 1024 * 1024  # 25MB in bytes
+            # Obtener duración del audio
+            import subprocess
+            cmd = ['ffmpeg', '-i', file_path]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            duration_match = re.search(r"Duration: (\d{2}):(\d{2}):(\d{2})", result.stderr)
+            if duration_match:
+                hours, minutes, seconds = map(int, duration_match.groups())
+                duration = hours * 3600 + minutes * 60 + seconds
+                self.logger.info(f"Duración del audio: {duration} segundos")
+                print(f"[INFO] Duración del audio: {duration} segundos")
+            else:
+                raise Exception("No se pudo obtener la duración del audio")
             
-            if file_size > MAX_SIZE:
-                self.logger.info(f"Archivo demasiado grande ({file_size/1024/1024:.2f}MB), dividiendo en segmentos...")
+            # Si el archivo es muy grande, dividirlo
+            file_size = os.path.getsize(file_path) / (1024 * 1024)  # Tamaño en MB
+            if file_size > 25:  # Si es mayor a 25MB
+                self.logger.info(f"Archivo demasiado grande ({file_size:.2f}MB), dividiendo en segmentos...")
+                print(f"[INFO] Archivo demasiado grande ({file_size:.2f}MB), dividiendo en segmentos...")
                 return self._transcribe_large_file(file_path)
             
-            # Use configured transcriber for normal size files
-            self.logger.info("Iniciando transcripción con Whisper...")
-            transcription = self.transcriber.transcribe(file_path)
-            self.logger.info("Transcripción completada exitosamente")
-            
-            # Save transcription to file
-            base_name = os.path.splitext(os.path.basename(file_path))[0]
-            transcription_file = os.path.join(self.transcriptions_dir, f"{base_name}.txt")
-            self.logger.info(f"Guardando transcripción en: {transcription_file}")
-            
-            with open(transcription_file, 'w', encoding='utf-8') as f:
-                f.write(transcription)
+            # Intentar transcripción con el método configurado
+            try:
+                transcription = self.transcriber.transcribe(file_path)
+                if not transcription:
+                    raise Exception("La transcripción está vacía")
+                    
+                # Guardar transcripción
+                base_name = os.path.splitext(os.path.basename(file_path))[0]
+                transcription_file = os.path.join(self.transcriptions_dir, f"{base_name}_transcription.txt")
                 
-            self.logger.info(f"Transcripción guardada exitosamente en: {transcription_file}")
-            return transcription_file
-            
+                with open(transcription_file, 'w', encoding='utf-8') as f:
+                    f.write(transcription)
+                    
+                self.logger.info(f"Transcripción guardada en: {transcription_file}")
+                print(f"[INFO] Transcripción guardada en: {transcription_file}")
+                return transcription_file
+                
+            except Exception as e:
+                self.logger.error(f"Error con el método de transcripción principal: {str(e)}")
+                print(f"[ERROR] Error con el método de transcripción principal: {str(e)}")
+                
+                # Intentar método alternativo
+                if config.TRANSCRIPTION_METHOD == "api":
+                    self.logger.info("Intentando transcripción local...")
+                    print("[INFO] Intentando transcripción local...")
+                    config.TRANSCRIPTION_METHOD = "local"
+                    transcription = self.transcriber.transcribe(file_path)
+                    if not transcription:
+                        raise Exception("La transcripción está vacía")
+                        
+                    # Guardar transcripción
+                    base_name = os.path.splitext(os.path.basename(file_path))[0]
+                    transcription_file = os.path.join(self.transcriptions_dir, f"{base_name}_transcription.txt")
+                    
+                    with open(transcription_file, 'w', encoding='utf-8') as f:
+                        f.write(transcription)
+                        
+                    self.logger.info(f"Transcripción guardada en: {transcription_file}")
+                    print(f"[INFO] Transcripción guardada en: {transcription_file}")
+                    return transcription_file
+                    
+                raise Exception(f"No se pudo transcribir con ningún método: {str(e)}")
+                
         except Exception as e:
-            self.logger.error(f"Error durante la transcripción: {str(e)}")
-            self.logger.error(f"Tipo de error: {type(e).__name__}")
-            import traceback
-            self.logger.error(f"Traceback completo:\n{traceback.format_exc()}")
-            raise
-            
+            self.logger.error(f"Error en transcripción: {str(e)}")
+            print(f"[ERROR] Error en transcripción: {str(e)}")
+            return None
+
     def _transcribe_large_file(self, file_path):
         """Handle transcription of files larger than 25MB by splitting them"""
         try:
@@ -401,128 +428,142 @@ class YouTubeDownloader:
             raise
 
     def summarize_transcription(self, transcription_file):
-        """Summarize the transcription using configured summarizer in both English and Spanish"""
-        if not os.path.exists(transcription_file):
-            raise FileNotFoundError(f"Archivo de transcripción no encontrado: {transcription_file}")
-            
-        self.logger.info(f"Iniciando resumen de la transcripción: {transcription_file}")
-        
+        """Generar resumen de la transcripción usando el método configurado"""
         try:
-            # Get base filename without extension
-            base_name = os.path.splitext(os.path.basename(transcription_file))[0]
-            summary_file_es = os.path.join(self.summaries_dir, f"{base_name}_summary_es.txt")
-            summary_file_en = os.path.join(self.summaries_dir, f"{base_name}_summary_en.txt")
+            self.logger.info(f"Iniciando resumen de: {transcription_file}")
+            print(f"[INFO] Iniciando resumen de: {transcription_file}")
             
-            # Read transcription
+            # Leer transcripción
             with open(transcription_file, 'r', encoding='utf-8') as f:
-                transcription_text = f.read()
-
-            # Use configured summarizer and track token usage
-            if isinstance(self.summarizer, OpenAISummarizer):
-                # Spanish summary
-                response_es = self.summarizer.client.chat.completions.create(
-                    model=config.OPENAI_MODEL,
-                    messages=[
-                        {"role": "system", "content": "Eres un asistente que crea resúmenes concisos de contenido transcrito. Formatea tu respuesta en dos secciones:\n1. TAGLINES: Puntos clave y enseñanzas principales\n2. RESUMEN: Una breve descripción del contenido"},
-                        {"role": "user", "content": f"Por favor analiza esta transcripción y proporciona taglines y resumen en español:\n\n{transcription_text}"}
-                    ]
-                )
-                summary_es = response_es.choices[0].message.content
-
-                # English summary
-                response_en = self.summarizer.client.chat.completions.create(
-                    model=config.OPENAI_MODEL,
-                    messages=[
-                        {"role": "system", "content": "You are a helpful assistant that creates concise summaries of transcribed content. Format your response in two sections:\n1. TAGLINES: Bullet points of key topics and main teachings\n2. SUMMARY: A brief overview of the content"},
-                        {"role": "user", "content": f"Please analyze this transcription and provide taglines and summary in English:\n\n{transcription_text}"}
-                    ]
-                )
-                summary_en = response_en.choices[0].message.content
+                transcription = f.read()
                 
-                # Track token usage
-                if config.OPENAI_MODEL in self.usage_data:
-                    self.usage_data[config.OPENAI_MODEL]['input_tokens'] += response_es.usage.prompt_tokens + response_en.usage.prompt_tokens
-                    self.usage_data[config.OPENAI_MODEL]['output_tokens'] += response_es.usage.completion_tokens + response_en.usage.completion_tokens
-            else:
-                summary_es = self.summarizer.summarize(transcription_text)
-                summary_en = summary_es  # Fallback to Spanish if non-OpenAI summarizer
+            if not transcription:
+                raise Exception("La transcripción está vacía")
             
-            # Save summaries to files
-            with open(summary_file_es, 'w', encoding='utf-8') as f:
-                f.write(summary_es)
-            with open(summary_file_en, 'w', encoding='utf-8') as f:
-                f.write(summary_en)
+            # Intentar resumen con el método configurado
+            try:
+                summary = self.summarizer.summarize(transcription)
+                if not summary:
+                    raise Exception("El resumen está vacío")
+                    
+                # Guardar resumen
+                base_name = os.path.splitext(os.path.basename(transcription_file))[0].replace('_transcription', '')
+                summary_file = os.path.join(self.summaries_dir, f"{base_name}_summary.txt")
                 
-            self.logger.info(f"Resúmenes completados y guardados en:\n- ES: {summary_file_es}\n- EN: {summary_file_en}")
-            return [summary_file_es, summary_file_en]
-            
+                with open(summary_file, 'w', encoding='utf-8') as f:
+                    f.write(summary)
+                    
+                self.logger.info(f"Resumen guardado en: {summary_file}")
+                print(f"[INFO] Resumen guardado en: {summary_file}")
+                return [summary_file]
+                
+            except Exception as e:
+                self.logger.error(f"Error con el método de resumen principal: {str(e)}")
+                print(f"[ERROR] Error con el método de resumen principal: {str(e)}")
+                
+                # Intentar método alternativo
+                if config.SUMMARIZATION_METHOD == "openai":
+                    self.logger.info("Intentando resumen con modelo local...")
+                    print("[INFO] Intentando resumen con modelo local...")
+                    config.SUMMARIZATION_METHOD = "llama"
+                    summary = self.summarizer.summarize(transcription)
+                    if not summary:
+                        raise Exception("El resumen está vacío")
+                        
+                    # Guardar resumen
+                    base_name = os.path.splitext(os.path.basename(transcription_file))[0].replace('_transcription', '')
+                    summary_file = os.path.join(self.summaries_dir, f"{base_name}_summary.txt")
+                    
+                    with open(summary_file, 'w', encoding='utf-8') as f:
+                        f.write(summary)
+                        
+                    self.logger.info(f"Resumen guardado en: {summary_file}")
+                    print(f"[INFO] Resumen guardado en: {summary_file}")
+                    return [summary_file]
+                    
+                raise Exception(f"No se pudo generar el resumen con ningún método: {str(e)}")
+                
         except Exception as e:
-            self.logger.error(f"Error durante el resumen: {str(e)}")
-            raise
+            self.logger.error(f"Error en resumen: {str(e)}")
+            print(f"[ERROR] Error en resumen: {str(e)}")
+            return None
 
     def process_url(self, url, i, total_urls):
-        """Process a single URL through all stages"""
-        self.logger.info(f"\n{'='*50}")
-        self.logger.info(f"Procesando URL {i}/{total_urls}: {url}")
-        
-        checkpoint_status = self._get_checkpoint_status(url)
-        audio_file = None
-        
+        """Procesar una URL individual"""
         try:
-            # Download stage
+            self.logger.info(f"\n==================================================")
+            self.logger.info(f"Procesando URL {i}/{total_urls}: {url}")
+            print(f"[INFO] Procesando URL {i}/{total_urls}: {url}")
+            
+            # Verificar checkpoint
+            checkpoint_status = self._get_checkpoint_status(url)
+            
+            # 1. Descarga
             if 'download' not in checkpoint_status:
                 self.logger.info("ETAPA 1: Descarga de video")
-                audio_file = self.download_video(url)
-                if not audio_file or not os.path.exists(audio_file):
-                    raise Exception(f"No se pudo descargar el video o el archivo no existe: {audio_file}")
-                self.logger.info(f"Archivo descargado exitosamente: {audio_file}")
+                print("[INFO] ETAPA 1: Descarga de video")
+                
+                file_path = self.download_video(url)
+                if not file_path:
+                    raise Exception("No se pudo descargar el video con ningún método")
+                    
                 self._save_checkpoint(url, 'download', 'completed')
             else:
-                try:
-                    audio_file = self._find_audio_file(url)
-                    if not audio_file or not os.path.exists(audio_file):
-                        self.logger.info("Reintentando descarga...")
-                        audio_file = self.download_video(url)
-                        if not audio_file or not os.path.exists(audio_file):
-                            raise Exception("No se pudo descargar el video en el reintento")
-                    self.logger.info(f"Usando archivo existente: {audio_file}")
-                except Exception as e:
-                    self.logger.error(f"Error con archivo existente, reintentando descarga: {str(e)}")
-                    audio_file = self.download_video(url)
-                    if not audio_file or not os.path.exists(audio_file):
-                        raise Exception("No se pudo descargar el video en ningún intento")
+                self.logger.info("Descarga ya completada, saltando...")
+                print("[INFO] Descarga ya completada, saltando...")
+                file_path = self._find_audio_file(url)
+                if not file_path:
+                    raise Exception("No se encontró el archivo de audio descargado")
             
-            # Verify audio file exists before continuing
-            if not audio_file or not os.path.exists(audio_file):
-                raise Exception("No se encontró el archivo de audio después de la descarga")
-            
-            # Transcription stage
+            # 2. Transcripción
             if 'transcription' not in checkpoint_status:
                 self.logger.info("ETAPA 2: Transcripción")
-                transcription_file = self.transcribe_video(audio_file)
+                print("[INFO] ETAPA 2: Transcripción")
+                
+                transcription_file = self.transcribe_video(file_path)
+                if not transcription_file:
+                    raise Exception("No se pudo transcribir el video")
+                    
                 self._save_checkpoint(url, 'transcription', 'completed')
             else:
+                self.logger.info("Transcripción ya completada, saltando...")
+                print("[INFO] Transcripción ya completada, saltando...")
                 transcription_file = self._find_transcription_file(url)
-                self.logger.info(f"Transcripción ya completada anteriormente: {transcription_file}")
+                if not transcription_file:
+                    raise Exception("No se encontró el archivo de transcripción")
             
-            # Summary stage
+            # 3. Resumen
             if 'summary' not in checkpoint_status:
-                self.logger.info("ETAPA 3: Resumen")
+                self.logger.info("ETAPA 3: Generación de resumen")
+                print("[INFO] ETAPA 3: Generación de resumen")
+                
                 summary_files = self.summarize_transcription(transcription_file)
+                if not summary_files:
+                    raise Exception("No se pudo generar el resumen")
+                    
                 self._save_checkpoint(url, 'summary', 'completed')
             else:
+                self.logger.info("Resumen ya completado, saltando...")
+                print("[INFO] Resumen ya completado, saltando...")
                 summary_files = self._find_summary_files(url)
-                self.logger.info(f"Resúmenes ya completados anteriormente: {summary_files}")
+                if not summary_files:
+                    raise Exception("No se encontraron los archivos de resumen")
             
-            # Log usage data
+            # Registrar uso
             self._log_usage(url)
             
-            return summary_files
+            self.logger.info(f"Proceso completado para: {url}")
+            print(f"[INFO] Proceso completado para: {url}")
             
         except Exception as e:
-            self.logger.error(f"Error procesando URL: {str(e)}")
+            self.logger.error(f"Error procesando {url}: {str(e)}")
+            print(f"[ERROR] Error procesando {url}: {str(e)}")
+            # Guardar el error en el checkpoint
             self._save_checkpoint(url, 'error', str(e))
-            raise
+            # No lanzar la excepción para continuar con las siguientes URLs
+            return False
+            
+        return True
 
     def _find_audio_file(self, url):
         """Find downloaded audio file for URL in the downloads directory"""
@@ -622,7 +663,8 @@ class YouTubeDownloader:
             # Procesar cada URL
             for i, url in enumerate(urls, 1):
                 try:
-                    summary_files = self.process_url(url, i, total_urls)
+                    if self.process_url(url, i, total_urls):
+                        summary_files.append(url)
                 except Exception as e:
                     self.logger.error(f"Error al procesar URL {i}/{total_urls}")
                     failed_urls.append(url)

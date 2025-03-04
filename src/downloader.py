@@ -47,15 +47,25 @@ class YouTubeDownloader:
         file_handler.setFormatter(file_format)
         self.logger.addHandler(file_handler)
         
-        # Handler para consola
-        console_handler = logging.StreamHandler()
+        # Handler para consola con encoding UTF-8
+        console_handler = logging.StreamHandler(sys.stdout)
         console_format = logging.Formatter('[%(levelname)s] %(message)s')
         console_handler.setFormatter(console_format)
         self.logger.addHandler(console_handler)
 
-        # Remove emojis from logs
+        # Remove emojis and special characters from logs
         for handler in self.logger.handlers:
-            handler.addFilter(lambda record: setattr(record, 'msg', self._remove_emojis(str(record.msg))) or True)
+            handler.addFilter(lambda record: setattr(record, 'msg', self._sanitize_text(str(record.msg))) or True)
+            
+    def _sanitize_text(self, text):
+        """Eliminar caracteres problemáticos del texto"""
+        # Eliminar emojis y caracteres especiales
+        text = re.sub(r'[^\x00-\x7F]+', '', text)
+        # Reemplazar caracteres no permitidos con guion bajo
+        text = re.sub(r'[<>:"/\\|?*\u200d]', '_', text)
+        # Eliminar espacios múltiples
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
             
     def _ensure_directories(self):
         """Asegurar que existen todos los directorios necesarios"""
@@ -93,13 +103,7 @@ class YouTubeDownloader:
 
     def _sanitize_filename(self, filename):
         """Eliminar caracteres problemáticos del nombre del archivo"""
-        # Eliminar emojis y caracteres especiales
-        filename = re.sub(r'[^\x00-\x7F]+', '', filename)
-        # Reemplazar caracteres no permitidos con guion bajo
-        filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
-        # Eliminar espacios múltiples
-        filename = re.sub(r'\s+', ' ', filename).strip()
-        return filename
+        return self._sanitize_text(filename)
             
     def _get_ydl_opts(self):
         """Obtener opciones para yt-dlp"""

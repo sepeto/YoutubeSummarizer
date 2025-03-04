@@ -17,6 +17,10 @@ class YouTubeDownloader:
         self.log_dir = os.path.join(base_dir, 'logs')
         self.usage_log_dir = os.path.join(base_dir, 'usage_logs')
         self.checkpoint_file = os.path.join(base_dir, 'checkpoint.txt')
+        
+        # Actualizar dependencias al inicio
+        self._update_dependencies()
+        
         self.transcriber = Transcriber.get_transcriber()
         self.summarizer = Summarizer.get_summarizer()
         self._setup_logging()
@@ -140,30 +144,35 @@ class YouTubeDownloader:
         """Actualizar las dependencias de descarga"""
         try:
             import subprocess
-            self.logger.info("Actualizando dependencias...")
+            print("[INFO] Actualizando dependencias...")
             
             # Actualizar yt-dlp
             subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"], capture_output=True)
-            self.logger.info("yt-dlp actualizado")
+            print("[INFO] yt-dlp actualizado")
             
             # Actualizar pytube
             subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "pytube"], capture_output=True)
-            self.logger.info("pytube actualizado")
+            print("[INFO] pytube actualizado")
             
             # Actualizar youtube-dl
             subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "youtube-dl"], capture_output=True)
-            self.logger.info("youtube-dl actualizado")
+            print("[INFO] youtube-dl actualizado")
+            
+            # Actualizar ffmpeg-python
+            subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "ffmpeg-python"], capture_output=True)
+            print("[INFO] ffmpeg-python actualizado")
+            
+            # Actualizar pydub
+            subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "pydub"], capture_output=True)
+            print("[INFO] pydub actualizado")
             
         except Exception as e:
-            self.logger.error(f"Error actualizando dependencias: {str(e)}")
+            print(f"[ERROR] Error actualizando dependencias: {str(e)}")
 
     def download_video(self, url):
         """Descargar un video de YouTube usando múltiples métodos"""
         self.logger.info(f"Iniciando descarga para: {url}")
         print(f"[INFO] Iniciando descarga para: {url}")
-        
-        # Actualizar dependencias
-        self._update_dependencies()
         
         # 1. Intentar con pytube (más ligero y rápido)
         try:

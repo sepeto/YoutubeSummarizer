@@ -446,7 +446,7 @@ class YouTubeDownloader:
                 if not summary:
                     raise Exception("El resumen está vacío")
                     
-                # Guardar resumen
+                # Guardar resumen original
                 base_name = os.path.splitext(os.path.basename(transcription_file))[0].replace('_transcription', '')
                 summary_file = os.path.join(self.summaries_dir, f"{base_name}_summary.txt")
                 
@@ -455,7 +455,32 @@ class YouTubeDownloader:
                     
                 self.logger.info(f"Resumen guardado en: {summary_file}")
                 print(f"[INFO] Resumen guardado en: {summary_file}")
-                return [summary_file]
+                
+                # Traducir el resumen (no la transcripción completa)
+                try:
+                    # Traducir a español
+                    summary_es = self.summarizer.translate(summary, target_lang='es')
+                    summary_file_es = os.path.join(self.summaries_dir, f"{base_name}_summary_es.txt")
+                    with open(summary_file_es, 'w', encoding='utf-8') as f:
+                        f.write(summary_es)
+                    self.logger.info(f"Resumen en español guardado en: {summary_file_es}")
+                    print(f"[INFO] Resumen en español guardado en: {summary_file_es}")
+                    
+                    # Traducir a inglés
+                    summary_en = self.summarizer.translate(summary, target_lang='en')
+                    summary_file_en = os.path.join(self.summaries_dir, f"{base_name}_summary_en.txt")
+                    with open(summary_file_en, 'w', encoding='utf-8') as f:
+                        f.write(summary_en)
+                    self.logger.info(f"Resumen en inglés guardado en: {summary_file_en}")
+                    print(f"[INFO] Resumen en inglés guardado en: {summary_file_en}")
+                    
+                    return [summary_file, summary_file_es, summary_file_en]
+                    
+                except Exception as e:
+                    self.logger.error(f"Error en traducción: {str(e)}")
+                    print(f"[ERROR] Error en traducción: {str(e)}")
+                    # Si falla la traducción, devolver al menos el resumen original
+                    return [summary_file]
                 
             except Exception as e:
                 self.logger.error(f"Error con el método de resumen principal: {str(e)}")
@@ -491,9 +516,9 @@ class YouTubeDownloader:
     def process_url(self, url, i, total_urls):
         """Procesar una URL individual"""
         try:
-            self.logger.info(f"\n==================================================")
+            self.logger.info(f"\n{'='*50}")
             self.logger.info(f"Procesando URL {i}/{total_urls}: {url}")
-            print(f"[INFO] Procesando URL {i}/{total_urls}: {url}")
+            print(f"\n[INFO] Procesando URL {i}/{total_urls}: {url}")
             
             # Verificar checkpoint
             checkpoint_status = self._get_checkpoint_status(url)
@@ -556,8 +581,9 @@ class YouTubeDownloader:
             print(f"[INFO] Proceso completado para: {url}")
             
         except Exception as e:
-            self.logger.error(f"Error procesando {url}: {str(e)}")
-            print(f"[ERROR] Error procesando {url}: {str(e)}")
+            error_msg = f"Error procesando {url}: {str(e)}"
+            self.logger.error(error_msg)
+            print(f"\n[ERROR] {error_msg}")
             # Guardar el error en el checkpoint
             self._save_checkpoint(url, 'error', str(e))
             # No lanzar la excepción para continuar con las siguientes URLs
@@ -646,7 +672,9 @@ class YouTubeDownloader:
         self.logger.info(f"{'='*50}")
         
         if not os.path.exists(file_path):
-            self.logger.error(f"El archivo no existe: {file_path}")
+            error_msg = f"El archivo no existe: {file_path}"
+            self.logger.error(error_msg)
+            print(f"\n[ERROR] {error_msg}")
             return []
             
         summary_files = []
@@ -659,14 +687,19 @@ class YouTubeDownloader:
                 
             total_urls = len(urls)
             self.logger.info(f"Total de URLs a procesar: {total_urls}")
+            print(f"\n[INFO] Total de URLs a procesar: {total_urls}")
             
             # Procesar cada URL
             for i, url in enumerate(urls, 1):
                 try:
                     if self.process_url(url, i, total_urls):
                         summary_files.append(url)
+                    else:
+                        failed_urls.append(url)
                 except Exception as e:
-                    self.logger.error(f"Error al procesar URL {i}/{total_urls}")
+                    error_msg = f"Error al procesar URL {i}/{total_urls}: {str(e)}"
+                    self.logger.error(error_msg)
+                    print(f"\n[ERROR] {error_msg}")
                     failed_urls.append(url)
                     
             # Resumen final
@@ -677,15 +710,26 @@ class YouTubeDownloader:
             self.logger.info(f"Procesamientos exitosos: {len(summary_files)}")
             self.logger.info(f"Procesamientos fallidos: {len(failed_urls)}")
             
+            print(f"\n[INFO] {'='*50}")
+            print(f"[INFO] RESUMEN FINAL DEL PROCESO")
+            print(f"[INFO] {'='*50}")
+            print(f"[INFO] Total URLs procesadas: {total_urls}")
+            print(f"[INFO] Procesamientos exitosos: {len(summary_files)}")
+            print(f"[INFO] Procesamientos fallidos: {len(failed_urls)}")
+            
             if failed_urls:
                 self.logger.warning("\nURLs que fallaron:")
+                print("\n[WARNING] URLs que fallaron:")
                 for url in failed_urls:
                     self.logger.warning(f"- {url}")
+                    print(f"[WARNING] - {url}")
                     
             return summary_files
             
         except Exception as e:
-            self.logger.error(f"Error general en el proceso: {str(e)}")
+            error_msg = f"Error general en el proceso: {str(e)}"
+            self.logger.error(error_msg)
+            print(f"\n[ERROR] {error_msg}")
             return summary_files
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ Models for transcription and summarization
 import os
 from openai import OpenAI
 from . import config
+import openai
 
 class Transcriber:
     @staticmethod
@@ -49,16 +50,43 @@ class Summarizer:
         else:
             raise ValueError(f"Invalid summarization method: {config.SUMMARIZATION_METHOD}")
 
-class OpenAISummarizer:
+class OpenAISummarizer(Summarizer):
     def __init__(self):
-        self.client = OpenAI(api_key=config.OPENAI_API_KEY)
-    
+        super().__init__()
+        self.model = config.OPENAI_MODEL
+        self.client = openai.OpenAI(api_key=config.OPENAI_API_KEY)
+        
     def summarize(self, text):
-        response = self.client.chat.completions.create(
-            model=config.OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant that creates concise summaries of transcribed content. Format your response in two sections:\n1. TAGLINES: Bullet points of key topics and main teachings\n2. SUMMARY: A brief overview of the content"},
-                {"role": "user", "content": f"Please analyze this transcription and provide taglines and summary:\n\n{text}"}
-            ]
-        )
-        return response.choices[0].message.content 
+        """Generar resumen usando OpenAI"""
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "Eres un experto en resumir contenido. Genera un resumen detallado y bien estructurado del texto proporcionado."},
+                    {"role": "user", "content": f"Resume el siguiente texto:\n\n{text}"}
+                ],
+                temperature=0.7,
+                max_tokens=1000
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            print(f"[ERROR] Error generando resumen con OpenAI: {str(e)}")
+            return None
+            
+    def translate(self, text, target_lang='es'):
+        """Traducir texto usando OpenAI"""
+        try:
+            lang_name = "español" if target_lang == 'es' else "inglés"
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": f"Eres un experto traductor. Traduce el texto al {lang_name} manteniendo el significado y el tono original."},
+                    {"role": "user", "content": f"Traduce el siguiente texto al {lang_name}:\n\n{text}"}
+                ],
+                temperature=0.3,
+                max_tokens=1000
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            print(f"[ERROR] Error traduciendo con OpenAI: {str(e)}")
+            return None 

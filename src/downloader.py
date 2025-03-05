@@ -36,36 +36,50 @@ class YouTubeDownloader:
         self.logger = logging.getLogger('downloader')
         self.logger.setLevel(logging.INFO)
         
+        # Configurar codificación por defecto para sys.stdout
+        if sys.stdout.encoding != 'utf-8':
+            import codecs
+            sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'replace')
+            
         # Limpiar handlers existentes
         self.logger.handlers = []
         
-        # Handler para archivo con encoding UTF-8
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_file = os.path.join(self.log_dir, f'process_{timestamp}.log')
-        file_handler = logging.FileHandler(log_file, encoding='utf-8')
-        file_format = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
-        file_handler.setFormatter(file_format)
-        self.logger.addHandler(file_handler)
-        
-        # Handler para consola con encoding UTF-8
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_format = logging.Formatter('[%(levelname)s] %(message)s')
-        console_handler.setFormatter(console_format)
-        self.logger.addHandler(console_handler)
-
-        # Remove emojis and special characters from logs
-        for handler in self.logger.handlers:
-            handler.addFilter(lambda record: setattr(record, 'msg', self._sanitize_text(str(record.msg))) or True)
+        try:
+            # Handler para archivo con encoding UTF-8
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_file = os.path.join(self.log_dir, f'process_{timestamp}.log')
+            file_handler = logging.FileHandler(log_file, encoding='utf-8', errors='replace')
+            file_format = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+            file_handler.setFormatter(file_format)
+            self.logger.addHandler(file_handler)
+            
+            # Handler para consola con encoding UTF-8
+            console_handler = logging.StreamHandler(sys.stdout)
+            console_format = logging.Formatter('[%(levelname)s] %(message)s')
+            console_handler.setFormatter(console_format)
+            self.logger.addHandler(console_handler)
+            
+        except Exception as e:
+            print(f"[ERROR] Error configurando logging: {str(e)}")
             
     def _sanitize_text(self, text):
-        """Eliminar caracteres problemáticos del texto"""
-        # Eliminar emojis y caracteres especiales
-        text = re.sub(r'[^\x00-\x7F]+', '', text)
-        # Reemplazar caracteres no permitidos con guion bajo
-        text = re.sub(r'[<>:"/\\|?*\u200d]', '_', text)
-        # Eliminar espacios múltiples
-        text = re.sub(r'\s+', ' ', text).strip()
-        return text
+        """Eliminar caracteres problemáticos del texto manteniendo caracteres especiales válidos"""
+        try:
+            # Convertir a string si no lo es
+            text = str(text)
+            
+            # Eliminar caracteres de control y no imprimibles
+            text = ''.join(char for char in text if char.isprintable() or char in ['\n', '\t', ' '])
+            
+            # Reemplazar caracteres no permitidos en nombres de archivo
+            text = re.sub(r'[<>:"/\\|?*]', '_', text)
+            
+            # Eliminar espacios múltiples
+            text = re.sub(r'\s+', ' ', text).strip()
+            
+            return text
+        except Exception:
+            return str(text)
             
     def _ensure_directories(self):
         """Asegurar que existen todos los directorios necesarios"""
@@ -178,6 +192,20 @@ class YouTubeDownloader:
         self.logger.info(f"Iniciando descarga para: {url}")
         print(f"[INFO] Iniciando descarga para: {url}")
         
+        # Obtener título del video
+        title = self._get_video_title(url)
+        self.logger.info(f"Título del video: {title}")
+        print(f"[INFO] Título del video: {title}")
+        
+        # Verificar si ya existe
+        mp3_path = os.path.join(self.output_dir, f"{title}.mp3")
+        if os.path.exists(mp3_path):
+            self.logger.info(f"Archivo ya existente: {mp3_path}")
+            print(f"[INFO] Archivo ya existente: {mp3_path}")
+            return mp3_path
+        
+        errors = []
+        
         # 1. Intentar con pytube (más ligero y rápido)
         try:
             from pytube import YouTube
@@ -190,7 +218,6 @@ class YouTubeDownloader:
             
             self.logger.info("Intentando descarga con pytube...")
             yt = YouTube(url, on_progress_callback=on_progress)
-            print(f"\n[INFO] Título del video: {yt.title}")
             
             streams = yt.streams.filter(only_audio=True).order_by('abr').desc()
             if not streams:
@@ -199,13 +226,13 @@ class YouTubeDownloader:
             if streams:
                 stream = streams.first()
                 print(f"[INFO] Descargando stream: {stream}")
-                file_path = stream.download(output_path=self.output_dir)
+                file_path = stream.download(output_path=self.output_dir, filename=title)
                 print("\n[INFO] Descarga completada con pytube")
                 
                 if not file_path.endswith('.mp3'):
                     from pydub import AudioSegment
                     audio = AudioSegment.from_file(file_path)
-                    mp3_path = file_path.rsplit('.', 1)[0] + '.mp3'
+                    mp3_path = os.path.join(self.output_dir, f"{title}.mp3")
                     audio.export(mp3_path, format='mp3')
                     os.remove(file_path)
                     file_path = mp3_path
@@ -215,55 +242,61 @@ class YouTubeDownloader:
                 return file_path
                 
         except Exception as e:
-            self.logger.error(f"Error con pytube: {str(e)}")
-            print(f"[ERROR] Error con pytube: {str(e)}")
-
-        # 2. Intentar con yt-dlp (más robusto)
+            error = f"Error con pytube: {str(e)}"
+            self.logger.error(error)
+            print(f"[ERROR] {error}")
+            errors.append(error)
+        
+        # 2. Intentar con yt-dlp
         try:
             self.logger.info("Intentando descarga con yt-dlp...")
+            print("[INFO] Intentando descarga con yt-dlp...")
+            
             ydl_opts = self._get_ydl_opts()
+            ydl_opts['outtmpl'] = os.path.join(self.output_dir, f"{title}.%(ext)s")
+            
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                print("[INFO] Descargando con yt-dlp...")
-                result = ydl.extract_info(url, download=True)
-                file_path = ydl.prepare_filename(result)
-                file_path = file_path.replace('.webm', '.mp3').replace('.m4a', '.mp3')
-                if os.path.exists(file_path):
-                    print("[INFO] Descarga completada con yt-dlp")
-                    self.logger.info(f"Archivo guardado como: {file_path}")
-                    return file_path
-                
+                ydl.download([url])
+                mp3_path = os.path.join(self.output_dir, f"{title}.mp3")
+                if os.path.exists(mp3_path):
+                    self.logger.info(f"Archivo descargado con yt-dlp: {mp3_path}")
+                    print(f"[INFO] Archivo descargado con yt-dlp: {mp3_path}")
+                    return mp3_path
+                    
         except Exception as e:
-            self.logger.error(f"Error con yt-dlp: {str(e)}")
-            print(f"[ERROR] Error con yt-dlp: {str(e)}")
-
-        # 3. Intentar con youtube-dl (última opción)
+            error = f"Error con yt-dlp: {str(e)}"
+            self.logger.error(error)
+            print(f"[ERROR] {error}")
+            errors.append(error)
+            
+        # 3. Intentar con youtube-dl como último recurso
         try:
-            import youtube_dl
             self.logger.info("Intentando descarga con youtube-dl...")
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                }],
-                'outtmpl': os.path.join(self.output_dir, '%(title)s.%(ext)s'),
-            }
+            print("[INFO] Intentando descarga con youtube-dl...")
+            
+            import youtube_dl
+            
+            ydl_opts = self._get_ydl_opts()
+            ydl_opts['outtmpl'] = os.path.join(self.output_dir, f"{title}.%(ext)s")
+            
             with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-                print("[INFO] Descargando con youtube-dl...")
-                result = ydl.extract_info(url, download=True)
-                file_path = ydl.prepare_filename(result)
-                file_path = file_path.replace('.webm', '.mp3').replace('.m4a', '.mp3')
-                if os.path.exists(file_path):
-                    print("[INFO] Descarga completada con youtube-dl")
-                    self.logger.info(f"Archivo guardado como: {file_path}")
-                    return file_path
-                
+                ydl.download([url])
+                mp3_path = os.path.join(self.output_dir, f"{title}.mp3")
+                if os.path.exists(mp3_path):
+                    self.logger.info(f"Archivo descargado con youtube-dl: {mp3_path}")
+                    print(f"[INFO] Archivo descargado con youtube-dl: {mp3_path}")
+                    return mp3_path
+                    
         except Exception as e:
-            self.logger.error(f"Error con youtube-dl: {str(e)}")
-            print(f"[ERROR] Error con youtube-dl: {str(e)}")
-
-        self.logger.error("Todos los métodos de descarga fallaron")
-        print("[ERROR] No se pudo descargar el video con ningún método")
+            error = f"Error con youtube-dl: {str(e)}"
+            self.logger.error(error)
+            print(f"[ERROR] {error}")
+            errors.append(error)
+            
+        # Si llegamos aquí, ningún método funcionó
+        error_msg = "No se pudo descargar con ningún método:\n" + "\n".join(errors)
+        self.logger.error(error_msg)
+        print(f"[ERROR] {error_msg}")
         return None
 
     def _log_usage(self, url):
@@ -313,21 +346,24 @@ class YouTubeDownloader:
     def transcribe_video(self, file_path):
         """Transcribir un video usando el método configurado"""
         try:
-            self.logger.info(f"Iniciando transcripción del archivo: {file_path}")
-            print(f"[INFO] Iniciando transcripción del archivo: {file_path}")
+            self.logger.info(f"Iniciando transcripción del archivo: {self._sanitize_text(file_path)}")
+            print(f"[INFO] Iniciando transcripción del archivo: {self._sanitize_text(file_path)}")
             
             # Obtener duración del audio
             import subprocess
-            cmd = ['ffmpeg', '-i', file_path]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            duration_match = re.search(r"Duration: (\d{2}):(\d{2}):(\d{2})", result.stderr)
-            if duration_match:
-                hours, minutes, seconds = map(int, duration_match.groups())
-                duration = hours * 3600 + minutes * 60 + seconds
-                self.logger.info(f"Duración del audio: {duration} segundos")
-                print(f"[INFO] Duración del audio: {duration} segundos")
-            else:
-                raise Exception("No se pudo obtener la duración del audio")
+            try:
+                cmd = ['ffmpeg', '-i', file_path]
+                result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
+                duration_match = re.search(r"Duration: (\d{2}):(\d{2}):(\d{2})", result.stderr)
+                if duration_match:
+                    hours, minutes, seconds = map(int, duration_match.groups())
+                    duration = hours * 3600 + minutes * 60 + seconds
+                    self.logger.info(f"Duración del audio: {duration} segundos")
+                    print(f"[INFO] Duración del audio: {duration} segundos")
+                else:
+                    print("[WARNING] No se pudo obtener la duración del audio")
+            except Exception as e:
+                print(f"[WARNING] Error obteniendo duración: {str(e)}")
             
             # Si el archivo es muy grande, dividirlo
             file_size = os.path.getsize(file_path) / (1024 * 1024)  # Tamaño en MB
@@ -344,13 +380,13 @@ class YouTubeDownloader:
                     
                 # Guardar transcripción
                 base_name = os.path.splitext(os.path.basename(file_path))[0]
-                transcription_file = os.path.join(self.transcriptions_dir, f"{base_name}_transcription.txt")
+                transcription_file = os.path.join(self.transcriptions_dir, f"{base_name}.txt")
                 
                 with open(transcription_file, 'w', encoding='utf-8') as f:
                     f.write(transcription)
                     
-                self.logger.info(f"Transcripción guardada en: {transcription_file}")
-                print(f"[INFO] Transcripción guardada en: {transcription_file}")
+                self.logger.info(f"Transcripción guardada en: {self._sanitize_text(transcription_file)}")
+                print(f"[INFO] Transcripción guardada en: {self._sanitize_text(transcription_file)}")
                 return transcription_file
                 
             except Exception as e:
@@ -368,13 +404,13 @@ class YouTubeDownloader:
                         
                     # Guardar transcripción
                     base_name = os.path.splitext(os.path.basename(file_path))[0]
-                    transcription_file = os.path.join(self.transcriptions_dir, f"{base_name}_transcription.txt")
+                    transcription_file = os.path.join(self.transcriptions_dir, f"{base_name}.txt")
                     
                     with open(transcription_file, 'w', encoding='utf-8') as f:
                         f.write(transcription)
                         
-                    self.logger.info(f"Transcripción guardada en: {transcription_file}")
-                    print(f"[INFO] Transcripción guardada en: {transcription_file}")
+                    self.logger.info(f"Transcripción guardada en: {self._sanitize_text(transcription_file)}")
+                    print(f"[INFO] Transcripción guardada en: {self._sanitize_text(transcription_file)}")
                     return transcription_file
                     
                 raise Exception(f"No se pudo transcribir con ningún método: {str(e)}")
@@ -393,8 +429,8 @@ class YouTubeDownloader:
             probe = ffmpeg.probe(file_path)
             duration = float(probe['streams'][0]['duration'])
             
-            # Calculate number of segments needed (10 minutes each)
-            SEGMENT_DURATION = 600  # 10 minutes in seconds
+            # Calculate number of segments needed (5 minutes each)
+            SEGMENT_DURATION = 300  # 5 minutes in seconds
             num_segments = int(duration / SEGMENT_DURATION) + 1
             self.logger.info(f"Dividiendo archivo en {num_segments} segmentos de {SEGMENT_DURATION/60} minutos...")
             
@@ -415,16 +451,19 @@ class YouTubeDownloader:
                     segments.append(output_segment)
                     self.logger.info(f"Segmento {i+1}/{num_segments} creado")
                 
-                # Transcribe each segment
+                # Transcribe each segment in parallel
+                from concurrent.futures import ThreadPoolExecutor
                 transcriptions = []
-                for i, segment in enumerate(segments):
-                    self.logger.info(f"Transcribiendo segmento {i+1}/{num_segments}...")
-                    transcription = self.transcriber.transcribe(segment)
-                    transcriptions.append(transcription)
-                    self.logger.info(f"Segmento {i+1} transcrito exitosamente")
+                
+                def transcribe_segment(segment):
+                    self.logger.info(f"Transcribiendo segmento {segments.index(segment)+1}/{num_segments}...")
+                    return self.transcriber.transcribe(segment)
+                
+                with ThreadPoolExecutor(max_workers=3) as executor:
+                    transcriptions = list(executor.map(transcribe_segment, segments))
                 
                 # Combine transcriptions
-                full_transcription = "\n".join(transcriptions)
+                full_transcription = "\n".join(filter(None, transcriptions))
                 
                 # Save full transcription
                 base_name = os.path.splitext(os.path.basename(file_path))[0]
@@ -433,7 +472,7 @@ class YouTubeDownloader:
                 with open(transcription_file, 'w', encoding='utf-8') as f:
                     f.write(full_transcription)
                 
-                self.logger.info(f"Transcripción completa guardada en: {transcription_file}")
+                self.logger.info(f"Transcripción completa guardada en: {self._sanitize_text(transcription_file)}")
                 return transcription_file
                 
         except Exception as e:
@@ -535,215 +574,254 @@ class YouTubeDownloader:
             
             # Verificar checkpoint
             checkpoint_status = self._get_checkpoint_status(url)
+            success = True
+            error_details = []
             
             # 1. Descarga
+            file_path = None
             if 'download' not in checkpoint_status:
                 self.logger.info("ETAPA 1: Descarga de video")
                 print("[INFO] ETAPA 1: Descarga de video")
                 
-                file_path = self.download_video(url)
-                if not file_path:
-                    raise Exception("No se pudo descargar el video con ningún método")
-                    
-                self._save_checkpoint(url, 'download', 'completed')
+                try:
+                    file_path = self.download_video(url)
+                    if file_path:
+                        self._save_checkpoint(url, 'download', 'completed')
+                    else:
+                        error_details.append("Fallo en descarga")
+                        success = False
+                except Exception as e:
+                    error_details.append(f"Error en descarga: {str(e)}")
+                    success = False
             else:
-                self.logger.info("Descarga ya completada, saltando...")
-                print("[INFO] Descarga ya completada, saltando...")
-                file_path = self._find_audio_file(url)
-                if not file_path:
-                    raise Exception("No se encontró el archivo de audio descargado")
+                self.logger.info("Descarga ya completada, buscando archivo...")
+                try:
+                    file_path = self._find_audio_file(url)
+                except Exception as e:
+                    error_details.append(f"Error buscando archivo: {str(e)}")
+                    success = False
             
             # 2. Transcripción
-            if 'transcription' not in checkpoint_status:
+            transcription_file = None
+            if success and file_path and 'transcription' not in checkpoint_status:
                 self.logger.info("ETAPA 2: Transcripción")
                 print("[INFO] ETAPA 2: Transcripción")
                 
-                transcription_file = self.transcribe_video(file_path)
-                if not transcription_file:
-                    raise Exception("No se pudo transcribir el video")
-                    
-                self._save_checkpoint(url, 'transcription', 'completed')
-            else:
-                self.logger.info("Transcripción ya completada, saltando...")
-                print("[INFO] Transcripción ya completada, saltando...")
-                transcription_file = self._find_transcription_file(url)
-                if not transcription_file:
-                    raise Exception("No se encontró el archivo de transcripción")
+                try:
+                    transcription_file = self.transcribe_video(file_path)
+                    if transcription_file:
+                        self._save_checkpoint(url, 'transcription', 'completed')
+                    else:
+                        error_details.append("Fallo en transcripción")
+                        success = False
+                except Exception as e:
+                    error_details.append(f"Error en transcripción: {str(e)}")
+                    success = False
+            elif success and file_path:
+                self.logger.info("Transcripción ya completada, buscando archivo...")
+                try:
+                    transcription_file = self._find_transcription_file(url)
+                except Exception as e:
+                    error_details.append(f"Error buscando transcripción: {str(e)}")
+                    success = False
             
             # 3. Resumen
-            if 'summary' not in checkpoint_status:
+            if success and transcription_file and 'summary' not in checkpoint_status:
                 self.logger.info("ETAPA 3: Generación de resumen")
                 print("[INFO] ETAPA 3: Generación de resumen")
                 
-                summary_files = self.summarize_transcription(transcription_file)
-                if not summary_files:
-                    raise Exception("No se pudo generar el resumen")
-                    
-                self._save_checkpoint(url, 'summary', 'completed')
+                try:
+                    summary_files = self.summarize_transcription(transcription_file)
+                    if summary_files:
+                        self._save_checkpoint(url, 'summary', 'completed')
+                    else:
+                        error_details.append("Fallo en resumen")
+                        success = False
+                except Exception as e:
+                    error_details.append(f"Error en resumen: {str(e)}")
+                    success = False
+            elif success and transcription_file:
+                self.logger.info("Resumen ya completado, buscando archivos...")
+                try:
+                    summary_files = self._find_summary_files(url)
+                except Exception as e:
+                    error_details.append(f"Error buscando resúmenes: {str(e)}")
+                    success = False
+            
+            # Registrar uso si hubo éxito
+            if success:
+                try:
+                    self._log_usage(url)
+                except Exception as e:
+                    self.logger.error(f"Error registrando uso: {str(e)}")
+            
+            # Registrar resultado final
+            if success:
+                self.logger.info(f"Proceso completado para: {url}")
+                print(f"[INFO] Proceso completado para: {url}")
             else:
-                self.logger.info("Resumen ya completado, saltando...")
-                print("[INFO] Resumen ya completado, saltando...")
-                summary_files = self._find_summary_files(url)
-                if not summary_files:
-                    raise Exception("No se encontraron los archivos de resumen")
+                error_msg = f"Errores procesando {url}: {'; '.join(error_details)}"
+                self.logger.error(error_msg)
+                print(f"\n[ERROR] {error_msg}")
+                self._save_checkpoint(url, 'error', '; '.join(error_details))
             
-            # Registrar uso
-            self._log_usage(url)
-            
-            self.logger.info(f"Proceso completado para: {url}")
-            print(f"[INFO] Proceso completado para: {url}")
+            return success
             
         except Exception as e:
-            error_msg = f"Error procesando {url}: {str(e)}"
+            error_msg = f"Error crítico procesando {url}: {str(e)}"
             self.logger.error(error_msg)
             print(f"\n[ERROR] {error_msg}")
-            # Guardar el error en el checkpoint
             self._save_checkpoint(url, 'error', str(e))
-            # No lanzar la excepción para continuar con las siguientes URLs
             return False
-            
-        return True
 
     def _find_audio_file(self, url):
-        """Find downloaded audio file for URL in the downloads directory"""
+        """Buscar archivo de audio existente para una URL"""
         try:
-            # First try to find by exact match
-            with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
-                info = ydl.extract_info(url, download=False)
-                title = self._sanitize_filename(info['title'])
-                expected_file = os.path.join(self.output_dir, f"{title}.mp3")
-                if os.path.exists(expected_file):
-                    self.logger.info(f"Archivo encontrado por coincidencia exacta: {expected_file}")
-                    return expected_file
+            from pytube import YouTube
+            yt = YouTube(url)
+            title = self._sanitize_filename(yt.title)
+            
+            # Buscar archivo MP3
+            mp3_path = os.path.join(self.output_dir, f"{title}.mp3")
+            if os.path.exists(mp3_path):
+                return mp3_path
                 
-            # If not found, try to find by video ID
-            video_id = url.split('watch?v=')[-1].split('&')[0]
-            for file in os.listdir(self.output_dir):
-                if file.endswith('.mp3'):
-                    file_path = os.path.join(self.output_dir, file)
-                    # Check if it's the most recently modified file
-                    if os.path.getmtime(file_path) > datetime.now().timestamp() - 60:  # File modified in the last minute
-                        self.logger.info(f"Archivo encontrado por tiempo de modificación reciente: {file_path}")
-                        return file_path
+            # Buscar otros formatos de audio
+            for ext in ['.m4a', '.webm', '.wav']:
+                file_path = os.path.join(self.output_dir, f"{title}{ext}")
+                if os.path.exists(file_path):
+                    return file_path
                     
-            # If still not found, try to find by partial title match
-            for file in os.listdir(self.output_dir):
-                if file.endswith('.mp3'):
-                    # Try matching by first 20 chars of sanitized title
-                    if title and title[:20].lower() in file.lower():
-                        file_path = os.path.join(self.output_dir, file)
-                        self.logger.info(f"Archivo encontrado por coincidencia parcial: {file_path}")
-                        return file_path
-                    
-            raise FileNotFoundError(f"No se encontró el archivo de audio para: {url}")
         except Exception as e:
-            self.logger.error(f"Error buscando archivo de audio: {str(e)}")
-            raise
-
+            self.logger.debug(f"Error buscando archivo de audio: {str(e)}")
+            
+        return None
+        
     def _find_transcription_file(self, url):
-        """Find transcription file for URL in the transcriptions directory"""
+        """Buscar archivo de transcripción existente para una URL"""
         try:
-            audio_file = self._find_audio_file(url)
-            base_name = os.path.splitext(os.path.basename(audio_file))[0]
-            expected_file = os.path.join(self.transcriptions_dir, f"{base_name}.txt")
+            from pytube import YouTube
+            yt = YouTube(url)
+            title = self._sanitize_filename(yt.title)
             
-            if os.path.exists(expected_file):
-                return expected_file
+            # Buscar archivo de transcripción
+            transcription_path = os.path.join(self.transcriptions_dir, f"{title}.txt")
+            if os.path.exists(transcription_path):
+                return transcription_path
                 
-            raise FileNotFoundError(f"No se encontró el archivo de transcripción para: {url}")
         except Exception as e:
-            self.logger.error(f"Error buscando archivo de transcripción: {str(e)}")
-            raise
-
+            self.logger.debug(f"Error buscando archivo de transcripción: {str(e)}")
+            
+        return None
+        
     def _find_summary_files(self, url):
-        """Find summary files for URL in the summaries directory"""
+        """Buscar archivos de resumen existentes para una URL"""
         try:
-            transcription_file = self._find_transcription_file(url)
-            base_name = os.path.splitext(os.path.basename(transcription_file))[0]
-            expected_files = [os.path.join(self.summaries_dir, f"{base_name}_summary_es.txt"), os.path.join(self.summaries_dir, f"{base_name}_summary_en.txt")]
+            from pytube import YouTube
+            yt = YouTube(url)
+            title = self._sanitize_filename(yt.title)
             
-            if all(os.path.exists(file) for file in expected_files):
-                return expected_files
+            # Buscar archivos de resumen
+            summary_path = os.path.join(self.summaries_dir, f"{title}_summary.txt")
+            if os.path.exists(summary_path):
+                return [summary_path]
                 
-            raise FileNotFoundError(f"No se encontraron los archivos de resumen para: {url}")
         except Exception as e:
-            self.logger.error(f"Error buscando archivos de resumen: {str(e)}")
-            raise
+            self.logger.debug(f"Error buscando archivos de resumen: {str(e)}")
+            
+        return None
 
-    def download_from_file(self, file_path):
-        """
-        Descarga videos desde un archivo de URLs, transcribe y resume
-        
-        Args:
-            file_path (str): Ruta al archivo con URLs (una por línea)
-            
-        Returns:
-            list: Lista de rutas a los archivos de resumen
-        """
-        self.logger.info(f"\n{'='*50}")
-        self.logger.info("INICIO DEL PROCESO")
-        self.logger.info(f"{'='*50}")
-        
-        if not os.path.exists(file_path):
-            error_msg = f"El archivo no existe: {file_path}"
-            self.logger.error(error_msg)
-            print(f"\n[ERROR] {error_msg}")
-            return []
-            
-        summary_files = []
-        failed_urls = []
-        
+    def download_from_file(self, urls_file):
+        """Descargar videos desde un archivo de URLs"""
         try:
-            # Leer URLs
-            with open(file_path, 'r', encoding='utf-8') as f:
-                urls = [line.strip() for line in f if line.strip()]
+            # Actualizar dependencias al inicio
+            self._update_dependencies()
+            
+            # Leer URLs del archivo
+            if not os.path.exists(urls_file):
+                self.logger.error(f"Archivo de URLs no encontrado: {urls_file}")
+                print(f"[ERROR] Archivo de URLs no encontrado: {urls_file}")
+                return []
                 
-            total_urls = len(urls)
-            self.logger.info(f"Total de URLs a procesar: {total_urls}")
-            print(f"\n[INFO] Total de URLs a procesar: {total_urls}")
+            with open(urls_file, 'r', encoding='utf-8') as f:
+                urls = [line.strip() for line in f.readlines() if line.strip()]
+                
+            if not urls:
+                self.logger.warning("No se encontraron URLs en el archivo")
+                print("[WARNING] No se encontraron URLs en el archivo")
+                return []
+                
+            self.logger.info(f"Procesando {len(urls)} URLs...")
+            print(f"[INFO] Procesando {len(urls)} URLs...")
             
             # Procesar cada URL
+            results = []
             for i, url in enumerate(urls, 1):
                 try:
-                    if self.process_url(url, i, total_urls):
-                        summary_files.append(url)
-                    else:
-                        failed_urls.append(url)
+                    success = self.process_url(url, i, len(urls))
+                    if success:
+                        results.append(url)
                 except Exception as e:
-                    error_msg = f"Error al procesar URL {i}/{total_urls}: {str(e)}"
-                    self.logger.error(error_msg)
-                    print(f"\n[ERROR] {error_msg}")
-                    failed_urls.append(url)
+                    self.logger.error(f"Error procesando URL {url}: {str(e)}")
+                    print(f"[ERROR] Error procesando URL {url}: {str(e)}")
+                    continue
                     
             # Resumen final
+            total = len(urls)
+            successful = len(results)
+            failed = total - successful
+            
             self.logger.info(f"\n{'='*50}")
-            self.logger.info("RESUMEN FINAL DEL PROCESO")
+            self.logger.info("RESUMEN FINAL")
             self.logger.info(f"{'='*50}")
-            self.logger.info(f"Total URLs procesadas: {total_urls}")
-            self.logger.info(f"Procesamientos exitosos: {len(summary_files)}")
-            self.logger.info(f"Procesamientos fallidos: {len(failed_urls)}")
+            self.logger.info(f"Total URLs: {total}")
+            self.logger.info(f"Exitosas: {successful}")
+            self.logger.info(f"Fallidas: {failed}")
             
-            print(f"\n[INFO] {'='*50}")
-            print(f"[INFO] RESUMEN FINAL DEL PROCESO")
-            print(f"[INFO] {'='*50}")
-            print(f"[INFO] Total URLs procesadas: {total_urls}")
-            print(f"[INFO] Procesamientos exitosos: {len(summary_files)}")
-            print(f"[INFO] Procesamientos fallidos: {len(failed_urls)}")
+            print(f"\n{'='*50}")
+            print("RESUMEN FINAL")
+            print(f"{'='*50}")
+            print(f"Total URLs: {total}")
+            print(f"Exitosas: {successful}")
+            print(f"Fallidas: {failed}")
             
-            if failed_urls:
-                self.logger.warning("\nURLs que fallaron:")
-                print("\n[WARNING] URLs que fallaron:")
-                for url in failed_urls:
-                    self.logger.warning(f"- {url}")
-                    print(f"[WARNING] - {url}")
-                    
-            return summary_files
+            if failed > 0:
+                self.logger.warning("Algunas URLs fallaron. Revise los logs para más detalles.")
+                print("\n[WARNING] Algunas URLs fallaron. Revise los logs para más detalles.")
+            
+            return results
             
         except Exception as e:
-            error_msg = f"Error general en el proceso: {str(e)}"
-            self.logger.error(error_msg)
-            print(f"\n[ERROR] {error_msg}")
-            return summary_files
+            self.logger.error(f"Error crítico procesando archivo de URLs: {str(e)}")
+            print(f"[ERROR] Error crítico procesando archivo de URLs: {str(e)}")
+            return []
+
+    def _get_video_title(self, url):
+        """Obtener título del video usando múltiples métodos"""
+        try:
+            # 1. Intentar con pytube
+            from pytube import YouTube
+            try:
+                yt = YouTube(url)
+                return self._sanitize_filename(yt.title)
+            except Exception as e:
+                self.logger.debug(f"Error obteniendo título con pytube: {str(e)}")
+                
+            # 2. Intentar con yt-dlp
+            try:
+                with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    return self._sanitize_filename(info.get('title', ''))
+            except Exception as e:
+                self.logger.debug(f"Error obteniendo título con yt-dlp: {str(e)}")
+                
+            # 3. Usar ID del video como último recurso
+            video_id = url.split('watch?v=')[-1].split('&')[0]
+            return f"video_{video_id}"
+            
+        except Exception as e:
+            self.logger.error(f"Error obteniendo título del video: {str(e)}")
+            return f"video_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
 if __name__ == "__main__":
     downloader = YouTubeDownloader()

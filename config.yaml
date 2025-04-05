@@ -1,0 +1,36 @@
+# Configuración de descarga
+download:
+  # Tipo de descarga: "audio" o "video"
+  type: "video"
+  
+  # Calidad de video (solo aplica si type es "video")
+  # Opciones: "highest", "lowest", "720p", "1080p", "2160p"
+  video_quality: "highest"
+  
+  # Formato de audio (solo aplica si type es "audio")
+  # Opciones: "mp3", "wav", "m4a"
+  audio_format: "mp3"
+  
+  # Calidad de audio en kbps (solo aplica si type es "audio")
+  # Opciones: 128, 192, 256, 320
+  audio_quality: 320
+  
+  # Directorio de descarga
+  output_dir: "Descargas"
+  
+# Configuración de logs
+logging:
+  # Nivel de log: "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
+  level: "INFO"
+  
+  # Directorio base de logs
+  base_dir: "logs"
+  
+  # Formato de fecha para los logs
+  date_format: "%Y-%m-%d %H:%M:%S"
+  
+  # Rotación de logs (en días)
+  rotation: 7
+  
+  # Tamaño máximo de archivo de log (en MB)
+  max_size: 10 
